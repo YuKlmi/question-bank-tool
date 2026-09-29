@@ -7,13 +7,32 @@
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import yaml
 
-TEMPLATE_DIR = Path(__file__).parent / "templates"
+
+def _template_dir() -> Path:
+    """定位模板目录，兼容源码运行与 PyInstaller 打包运行。"""
+    here = Path(__file__).resolve().parent / "templates"
+    if here.is_dir():
+        return here
+    # 打包后资源被解到 _MEIPASS 下（--add-data 的落点）
+    bundled = getattr(sys, "_MEIPASS", None)
+    if bundled:
+        cand = Path(bundled) / "engine" / "templates"
+        if cand.is_dir():
+            return cand
+        cand = Path(bundled) / "templates"
+        if cand.is_dir():
+            return cand
+    return here
+
+
+TEMPLATE_DIR = _template_dir()
 
 _LABEL_ORDER = {"A": 0, "B": 1, "C": 2, "D": 3}
 

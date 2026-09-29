@@ -12,8 +12,9 @@
     "test": "node --test \"app/tests/**/*.test.mjs\"",
     "test:e2e": "npm run build && electron electron/smoke.js",
     "test:engine": "python -m pytest engine/tests/",
-    "pack": "npm run build && electron-builder --dir",
-    "dist": "npm run build && electron-builder"
+    "pack:engine": "node scripts/pack-engine.mjs",
+    "pack": "npm run build && npm run pack:engine && electron-builder --dir --config.win.target=dir",
+    "dist": "npm run build && npm run pack:engine && electron-builder"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",

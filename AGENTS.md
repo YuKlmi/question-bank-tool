@@ -548,7 +548,34 @@ npm run dist            # 生成 portable + NSIS 安装包
 | M5 | 批注 + 错题本 + 收藏复习 | 闭环可跑通 | ✅ 完成 |
 | M6 | `.doc`/`.docx` 通道 + 混排答案回填（样例 A 型） | 样例 A 答案回填 + 人工队列可用 | ✅ 完成 |
 | M7 | 表格 / 图片选项 / 公式保真展示 + 图片题原图展示与手动录入 | 图形题与表格题正常显示；图片题可看图作答并支持补录 | ✅ 完成 |
-| M8 | 打包 exe + 导出 + 备份还原 | 目标机无 Office 可运行 | ⏳ 打包脚本已就绪，见「待决问题 1」 |
+| M8 | 打包 exe + 导出 + 备份还原 | 目标机无 Office 可运行 | ✅ 完成 |
+
+### 打包结果（实测）
+
+```
+release/win-unpacked/
+├─ 题库存取练习工具.exe            # Electron 壳（180 MB）
+└─ resources/engine/qtb-engine.exe  # 内置的 Python 解析引擎（52.3 MB）
+                                    # 整套 436 MB
+```
+
+已验证：**打包后的应用会拉起内置的 `qtb-engine.exe`，不依赖本机 Python**。
+启动日志：
+
+```
+[py] 启动解析引擎: ...\resources\engine\qtb-engine.exe --data-dir ... cwd=...\resources\engine
+[py] [engine] [rpc] 就绪 dataDir=...
+```
+
+打包命令：`npm run pack`（免安装目录）/ `npm run dist`（portable + NSIS 安装包）。
+打包需要联网（从 GitHub 拉 Electron 与 winCodeSign）。
+
+**打包注意**：
+
+- Electron 的二进制缓存默认在 `%LOCALAPPDATA%\electron`。若该目录写入受限，
+  需把 `ELECTRON_CACHE` / `electron_config_cache` 指到可写位置
+- `engine/dist/qtb-engine.exe` 由 `npm run pack:engine` 生成，
+  经 electron-builder 的 `extraResources` 带进 `resources/engine/`
 
 ### 实测达成的指标
 
@@ -573,9 +600,29 @@ npm run dist            # 生成 portable + NSIS 安装包
 | 桌面壳 ↔ 引擎 | **6** | `npm test` | Python 子进程启停、JSON-RPC 收发、并发不串号、导入全流程 |
 | 端到端冒烟 | **10** | `npm run test:e2e` | 真实 Electron 下渲染进程→preload→IPC→引擎整条链路 |
 
-**排序理由**：先做样例 B（格式统一），用最短路径打通
-"导入→答题→批注→错题"全闭环；样例 A（格式混乱）放在 M6，
-届时校对界面与模板机制已就绪。
+### 已知限制（诚实记录）
+
+1. **未接入 OCR**：图片题面只展示原图、由用户手动录入。这是明确决策
+   （理由见「七、技术架构 → 图片题面处理」），不是遗漏。
+   可行性评估已留档，日后图片题占比上升可直接捡起。
+2. **Word 公式未做语义转换**：设计里提过 `OMML → LaTeX → KaTeX`，
+   实现阶段走的是一律截图保真展示。行测题库实测没有真公式，
+   因此在没有真实需求样本前不投入。
+3. **多选题不支持部分给分**：目前要求选项集合完全一致才算对；
+   界面会提示漏选，但不计分。是否需要部分分取决于你的使用习惯。
+4. **`.doc` 转换依赖本机 Word**：目标机无 Office 时会抛明确错误，
+   LibreOffice 兜底路径未实现（当前环境未安装 LibreOffice，无法验证）。
+5. **未设置应用图标**：打包用的是 Electron 默认图标。
+6. **表格仅转文本**：`.docx` 的表格转成以 `|` 连接的行文本，
+   原样恢复成 HTML 表格尚未实现。
+
+### 后续可做（按性价比排序）
+
+1. 接 OCR —— 若题库里图片题占比升高（判据：超过 20%）
+2. 多选题部分给分 + 填空同义答案维护界面
+3. Word 公式（OMML）转 LaTeX 并在答题页用 KaTeX 渲染
+4. `.docx` 表格 HTML 化，配合冻结表头
+5. 应用图标与签名（当前无签名，安装时会有安全提示）
 
 ---
 
