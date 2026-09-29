@@ -1,0 +1,63 @@
+{
+  "name": "question-bank-tool",
+  "version": "0.1.0",
+  "private": true,
+  "description": "题库提取与练习工具：读取 Word/PDF 题库，结构化后用于做题、对照答案与批注",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:renderer": "vite",
+    "build": "vite build",
+    "start": "npm run build && electron .",
+    "test": "node --test \"app/tests/**/*.test.mjs\"",
+    "test:e2e": "npm run build && electron electron/smoke.js",
+    "test:engine": "python -m pytest engine/tests/",
+    "pack": "npm run build && electron-builder --dir",
+    "dist": "npm run build && electron-builder"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.3.1",
+    "echarts": "^5.5.1",
+    "element-plus": "^2.8.8",
+    "pinia": "^2.2.6",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "vite": "^6.0.3"
+  },
+  "build": {
+    "appId": "com.qtb.questionbank",
+    "productName": "题库存取练习工具",
+    "files": [
+      "electron/**/*",
+      "dist/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "engine/dist",
+        "to": "engine",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": [
+        "portable",
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

@@ -6,6 +6,9 @@ release/
 *.log
 npm-debug.log*
 
+# Electron 二进制缓存（沙箱环境下重定向到工作区内）
+.cache/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -13,6 +16,9 @@ __pycache__/
 venv/
 build/
 *.spec
+
+# 引擎打包产物
+engine/dist/
 
 # 勘察与解析产物（可重新生成，不入库）
 tools/out/

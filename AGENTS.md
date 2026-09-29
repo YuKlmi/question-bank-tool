@@ -343,13 +343,25 @@ Review(docId, questionId, starred, tags JSON, wrongCount, lastWrongAt,
 | 层 | 选型 | 理由 |
 |---|---|---|
 | 桌面壳 | Electron | 打包 exe、本地文件读写 |
-| 界面 | Vue 3 + Element Plus + Pinia | 用户既有技术栈 |
+| 界面 | Vue 3 + Element Plus + Pinia + ECharts | 用户既有技术栈 |
 | 公式渲染 | KaTeX | 轻量、离线 |
 | **解析引擎** | **Python 3**（sidecar） | 见下 |
-| 存储 | SQLite（better-sqlite3） | 单机、易备份 |
+| **存储** | **SQLite（Python 标准库 `sqlite3`）** | 见下，**已变更** |
 | 图片 | 本地 `media/` 目录 | 与库分离 |
 
 > **不引入 OCR**：图片题面直接展示原图、由用户手动录入，理由见下节。
+
+**存储选型的变更（设计初稿 → 实现）**
+
+初稿写的是 Node 侧 `better-sqlite3`。实现时改为由 **Python 标准库 `sqlite3`** 托管，
+理由是 better-sqlite3 属于原生模块，在 Electron 下必须 electron-rebuild，
+ABI 不匹配是打包失败的头号原因。既然已有 Python sidecar，让它托管数据库可以做到：
+
+- **零原生依赖、零编译**：`pip install` 全是纯 Python 包或预编译轮子
+- **备份/还原退化成拷文件**：不需要为数据层再写一套「导出/导入」逻辑
+- 数据层与解析层同进程，避免跨语言事务与一致性协调
+
+代价：所有数据操作都要经过 sidecar（多一次 IPC），单机场景下可忽略。
 
 **为什么解析引擎用 Python 而不是纯 Node：**
 
@@ -425,25 +437,74 @@ cp39–cp313 轮子，本机为 **Python 3.14.5**，pip 直接报 `from versions
 | PDF 备选 | pypdf | 6.13.1 | 已装，暂未使用 |
 | 图像处理备选 | opencv-python | 4.13.0 | 已装，目前未直接使用 |
 
-### 目录结构（规划）
+### 目录结构（已实现）
 
 ```
-├─ AGENTS.md                  # 本文档
-├─ tools/
-│  ├─ probe_samples.py        # 样例结构勘察
-│  ├─ feasibility_check.py    # 解析成功率度量
-│  ├─ render_page.py          # 页面渲染 / 嵌入图导出
-│  ├─ ocr_probe.py            # OCR 引擎对比试跑
-│  └─ out/                    # 产物（不入库）
-├─ engine/                    # Python 解析引擎
-│  ├─ normalize/              # doc/docx/pdf 归一化
-│  ├─ annotate/               # 标记
-│  ├─ attach/                 # 回填
-│  ├─ verify/                 # 校验
-│  ├─ templates/              # 规则模板 YAML
-│  └─ rpc.py                  # JSON-RPC 入口
-├─ samples/                   # 回归测试 fixture（已入库两份样例）
-└─ app/                       # Electron + Vue3
+├─ AGENTS.md                    # 本文档
+├─ pytest.ini                   # 引擎测试配置
+├─ package.json                 # Electron + Vite + Vue3
+├─ vite.config.mjs
+├─ index.html
+│
+├─ engine/                      # Python 解析引擎（含数据库，唯一的业务真理源）
+│  ├─ requirements.txt
+│  ├─ models.py                 # 数据模型与枚举取值
+│  ├─ rules.py                  # 规则模板加载 + 行内多选项切分
+│  ├─ grading.py                # 题型推断与三档判分
+│  ├─ imagestore.py             # 图片落盘与内容去重
+│  ├─ db.py                     # SQLite 结构与读写、备份/还原
+│  ├─ service.py                # 业务服务层（界面全部接口面）
+│  ├─ pipeline.py               # 四段式流水线编排
+│  ├─ rpc.py                    # JSON-RPC over stdio
+│  ├─ cli.py                    # 命令行调试入口
+│  ├─ templates/                # 规则模板 YAML（规则与代码分离）
+│  │  ├─ pdf-consolidated.yaml  #   行测-答案集中式（样例 B 型）
+│  │  └─ docx-mixed.yaml        #   行测-题目与答案混排（样例 A 型）
+│  ├─ normalize/                # 第 1 段：doc / docx / pdf → Block 块流
+│  ├─ annotate/                 # 第 2 段：打标（只做局部判断）
+│  ├─ attach/                   # 第 3 段：回填（归属、跨页、答案分层匹配）
+│  ├─ verify/                   # 第 4 段：校验（置信度、状态、报告）
+│  └─ tests/                    # pytest 测试（75 项）
+│
+├─ electron/                    # 桌面壳
+│  ├─ main.js                   # 主进程：窗口、IPC、qtb-media:// 协议
+│  ├─ preload.js                # contextBridge 安全桥
+│  └─ pybridge.js               # Python 子进程 JSON-RPC 客户端
+│
+├─ src/                         # Vue3 渲染进程
+│  ├─ api.js                    # 引擎方法封装（与 rpc.py 契约一一对应）
+│  ├─ router.js / stores/       # 路由与 Pinia（文档分区的状态管理）
+│  ├─ components/               # QuestionCard / QuestionEditor / AnnotationPanel / EChart
+│  └─ views/                    # 文档库 / 题目与校对 / 答题 / 错题本 / 收藏 / 设置
+│
+├─ app/tests/                   # 桌面壳 ↔ 引擎 的集成测试（node:test）
+├─ scripts/dev.mjs              # 开发启动器（先 Vite 后 Electron）
+├─ samples/                     # 回归测试 fixture（两份样例）
+└─ tools/                       # 勘察与度量脚本（out/ 不入库）
+```
+
+### 运行与测试
+
+```bash
+# 1) 安装解析引擎依赖
+python -m pip install -r engine/requirements.txt
+
+# 2) 安装界面依赖（Electron 缓存建议指向工作区内，避免被系统权限拦截）
+npm install
+
+# 3) 开发运行
+npm run dev
+
+# 4) 测试
+npm run test:engine     # 引擎 75 项：规则 / 流水线 / 服务 / RPC / 隔离性
+npm test                # 桌面壳 ↔ 引擎 集成（node:test，零额外依赖）
+
+# 5) 只用引擎解析一份文档（调试用）
+python -m engine.cli parse samples/行测题库及答案详解二.pdf --pending 10
+
+# 6) 打包（可选）
+npm run pack            # 仅生成免安装目录
+npm run dist            # 生成 portable + NSIS 安装包
 ```
 
 ---
@@ -478,16 +539,39 @@ cp39–cp313 轮子，本机为 **Python 3.14.5**，pip 直接报 `from versions
 
 ## 九、里程碑
 
-| 阶段 | 内容 | 验收标准 |
+| 阶段 | 内容 | 验收标准 | 状态 |
+|---|---|---|---|
+| M1 | 项目骨架 + SQLite（按文档分区模型）+ 数据目录/备份 | 可初始化库、可备份还原 | ✅ 完成 |
+| M2 | Python 引擎：PDF 归一化 + 标记 + 回填（样例 B 型） | 解析出 135 题，答案命中 134，7 道图片题标 `pending_input` | ✅ 完成 |
+| M3 | 解析校对界面 | 低置信题目可人工修正并入库；图片题可手动录入 | ✅ 完成 |
+| M4 | 答题模式 + 分档判分（客观题闭环） | 单选/多选/判断判分正确 | ✅ 完成 |
+| M5 | 批注 + 错题本 + 收藏复习 | 闭环可跑通 | ✅ 完成 |
+| M6 | `.doc`/`.docx` 通道 + 混排答案回填（样例 A 型） | 样例 A 答案回填 + 人工队列可用 | ✅ 完成 |
+| M7 | 表格 / 图片选项 / 公式保真展示 + 图片题原图展示与手动录入 | 图形题与表格题正常显示；图片题可看图作答并支持补录 | ✅ 完成 |
+| M8 | 打包 exe + 导出 + 备份还原 | 目标机无 Office 可运行 | ⏳ 打包脚本已就绪，见「待决问题 1」 |
+
+### 实测达成的指标
+
+| 指标 | 样例 B（.pdf） | 样例 A（.doc） |
 |---|---|---|
-| M1 | 项目骨架 + SQLite（按文档分区模型）+ 数据目录/备份 | 可初始化库、可备份还原 |
-| M2 | Python 引擎：PDF 归一化 + 标记 + 回填（样例 B 型） | 解析出 128 题（7 道图片题标 `pending_input` 单列），答案对照命中 126 题 |
-| M3 | 解析校对界面 | 低置信题目可人工修正并入库；图片题可手动录入 |
-| M4 | 答题模式 + 分档判分（客观题闭环） | 单选/多选/判断判分正确 |
-| M5 | 批注 + 错题本 + 收藏复习 | 闭环可跑通 |
-| M6 | `.doc`/`.docx` 通道 + 混排答案回填（样例 A 型） | 样例 A 答案回填 + 人工队列可用 |
-| M7 | 表格 / 图片选项 / 公式保真展示 + 图片题面原图展示与手动录入入口 | 图形题与表格题正常显示；图片题可看图作答并支持补录 |
-| M8 | 打包 exe + 导出 + 备份还原 | 目标机无 Office 可运行（待决问题 1 解决后） |
+| 解析题数 | 135 | 54 |
+| 答案命中 | **134**（99.3%） | 35 |
+| 图片题待录入 | 7（题 1–3、21–24） | 0 |
+| 待人工校对 | 1（题 78，源文档本就无答案） | 49 |
+| 跨页选项拼接 | ✅ 题 5 的 D 选项跨页拼回 | — |
+| 噪声过滤 | ✅ 页码 / 三类水印全部滤除 | ✅ |
+
+样例 A 的 49 道待校对是**预期结果**：该文档题号重复率 63.2%，
+按设计不猜测填充，统一留给人工确认（M6 验收口径即「人工队列可用」）。
+其中 28 条答案以「就近推断」方式回填并标 `doc_inferred`，需人工确认。
+
+### 测试覆盖
+
+| 测试 | 数量 | 命令 | 内容 |
+|---|---|---|---|
+| 引擎单测与集成 | **75** | `npm run test:engine` | 规则切分、两条样例的流水线回归、服务层与持久化、RPC 契约、文档分区隔离 |
+| 桌面壳 ↔ 引擎 | **6** | `npm test` | Python 子进程启停、JSON-RPC 收发、并发不串号、导入全流程 |
+| 端到端冒烟 | **10** | `npm run test:e2e` | 真实 Electron 下渲染进程→preload→IPC→引擎整条链路 |
 
 **排序理由**：先做样例 B（格式统一），用最短路径打通
 "导入→答题→批注→错题"全闭环；样例 A（格式混乱）放在 M6，

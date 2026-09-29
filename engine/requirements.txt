@@ -1,0 +1,12 @@
+# 解析引擎依赖（Python 3.14 已验证）
+# 安装：python -m pip install -r engine/requirements.txt
+
+pymupdf==1.28.2        # PDF 文本块 / 坐标 / 图片提取
+python-docx==1.2.0     # .docx 段落、表格、批注
+pywin32==312           # .doc → .docx 转换（依赖本机 Microsoft Word）
+Pillow==12.3.0         # 图片处理与统一转存
+PyYAML==6.0.3          # 规则模板
+
+# 说明：
+# - SQLite 使用 Python 标准库 sqlite3，无第三方依赖
+# - 不引入 OCR（见 AGENTS.md「图片题面处理」）
