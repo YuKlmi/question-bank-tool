@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from engine.models import AS_DOC_INFERRED
+from engine.models import AS_DOC, AS_DOC_INFERRED
 
 
 @pytest.fixture(scope="module")
@@ -49,15 +49,42 @@ def test_stem_clean_of_options(doc_result):
     assert "千娇百媚" not in q1.stem
 
 
-def test_answers_backfilled_with_proximity(doc_result):
-    """题号重复导致歧义时，用「就近」收敛，且标记为待确认来源。"""
+def _find(doc_result, group_kw: str, display_no: int):
+    for q in doc_result.questions:
+        g = next((g for g in doc_result.groups if g.seq == q.group_seq), None)
+        if g and group_kw in g.title and q.display_no == display_no:
+            return q
+    return None
+
+
+def test_answers_backfilled_by_run_alignment(doc_result):
+    """题号在大题组间重置时，按「题号递增段」对齐，段内按题号精确匹配。
+
+    这条取代了早期的「就近推断」：分段对齐后，段内匹配是确定的，
+    不需要也不应该再去猜相邻题。
+    """
     r = doc_result.report
-    assert r["answersMatched"] > 0
+    assert r["answersMatched"] >= 30
+    exact = [q for q in doc_result.questions if q.answer_source == AS_DOC]
+    assert len(exact) >= 25, f"精确匹配应占多数，实际 {len(exact)}"
     inferred = [q for q in doc_result.questions if q.answer_source == AS_DOC_INFERRED]
-    assert inferred, "样例 A 应产生就近推断的答案"
-    for q in inferred:
-        assert q.answers
-        assert q.review_state == "pending", "就近推断的答案必须留在人工校对队列"
+    assert inferred == [], "分段对齐后不应再产生就近推断的答案"
+
+
+def test_answer_alignment_not_shifted(doc_result):
+    """抽查：答案必须与其解析正文对应，不能整体错位。"""
+    q1 = _find(doc_result, "语言理解", 1)
+    assert q1 is not None and q1.answers == ["B"]
+    assert "莫衷一是" in q1.explanations[0].content
+
+    q2 = _find(doc_result, "语言理解", 2)
+    assert q2 is not None and q2.answers == ["C"]
+    assert "规模化" in q2.explanations[0].content
+
+    # 资料分析组的题 1（题号与语言理解组重复，最容易错位）
+    mat = _find(doc_result, "统计表", 1)
+    assert mat is not None and mat.answers == ["C"]
+    assert "1720" in mat.explanations[0].content
 
 
 def test_no_answer_question_flagged(doc_result):

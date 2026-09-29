@@ -82,25 +82,27 @@
       </span>
     </div>
 
-    <!-- 解析 -->
-    <div
-      v-for="exp in question.explanations || []"
-      :key="exp.id"
-      class="qtb-explain-box"
-    >
-      <strong>{{ exp.title || '解析' }}</strong>
-      <div v-if="exp.content" style="margin-top: 4px">{{ exp.content }}</div>
-      <div v-if="expImages(exp).length" class="qtb-images">
-        <el-image
-          v-for="img in expImages(exp)"
-          :key="img.id"
-          class="qtb-image"
-          :src="mediaUrl(img.file_path)"
-          fit="contain"
-          style="max-height: 360px"
-        />
+    <!-- 解析：受 showAnswer 控制。答题模式下默认隐藏，点「查看解析」才展开 -->
+    <template v-if="showAnswer">
+      <div
+        v-for="exp in question.explanations || []"
+        :key="exp.id"
+        class="qtb-explain-box"
+      >
+        <strong>{{ exp.title || '解析' }}</strong>
+        <div v-if="exp.content" style="margin-top: 4px">{{ exp.content }}</div>
+        <div v-if="expImages(exp).length" class="qtb-images">
+          <el-image
+            v-for="img in expImages(exp)"
+            :key="img.id"
+            class="qtb-image"
+            :src="mediaUrl(img.file_path)"
+            fit="contain"
+            style="max-height: 360px"
+          />
+        </div>
       </div>
-    </div>
+    </template>
 
     <!-- 文档原始批注 -->
     <div v-if="docComments.length" class="qtb-explain-box">

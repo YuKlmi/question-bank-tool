@@ -54,7 +54,7 @@ def parse(
     event_counts = markers.counts(events)
 
     # 第 3 段：回填
-    att = attacher.attach(events, doc_id=0)
+    att = attacher.attach(events, template, doc_id=0)
     answer_stats = answer_backfill.backfill_answers(
         att.questions, att.answers,
         next_seq=(max((q.seq for q in att.questions), default=-1) + 1),

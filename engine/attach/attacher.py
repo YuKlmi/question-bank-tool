@@ -17,19 +17,25 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 from ..annotate.markers import (
-    Event, K_ANSWER, K_ANSWER_SECTION, K_EXPLANATION, K_GROUP,
-    K_IMAGE, K_NOISE, K_OPTION, K_QUESTION, K_TEXT,
+    Event, K_ANSWER, K_ANSWER_GROUP, K_ANSWER_HEAD, K_ANSWER_SECTION,
+    K_EXPLANATION, K_GROUP, K_IMAGE, K_NOISE, K_OPTION, K_QUESTION, K_TEXT,
 )
 from ..models import (
     Explanation, Group, ImageRef, Option, Question,
     ROLE_EXPLANATION, ROLE_STEM, RS_OK, RS_PENDING, RS_PENDING_INPUT,
     SS_IMAGE, SS_TEXT,
 )
+from ..rules import Template
 
 
 @dataclass
 class AnswerRec:
-    """答案区的一条记录（含其解析正文与配图）。"""
+    """答案区的一条记录（含其解析正文与配图）。
+
+    答案字母有两种来源：
+    - 快路径：整行同时含题号与字母，创建时即确定
+    - 慢路径：只切出题号（`answer_head`），字母在块结束时从累积内容里抽
+    """
     no: int
     answer: str
     confidence: float
@@ -38,6 +44,8 @@ class AnswerRec:
     images: List[ImageRef] = field(default_factory=list)
     group_seq: Optional[int] = None
     matched_seq: Optional[int] = None
+    needs_letter: bool = False     # 慢路径：块结束时才抽字母
+    in_zone: bool = False          # 是否来自卷尾的答案区
 
     def append_text(self, line: str) -> None:
         self.text = f"{self.text}\n{line}" if self.text else line
@@ -52,7 +60,8 @@ class AttachResult:
     q_start: Dict[int, int] = field(default_factory=dict)   # id(Question) → 块流位置
 
 
-def attach(events: List[Event], doc_id: int = 0) -> AttachResult:
+def attach(events: List[Event], template: Template,
+           doc_id: int = 0) -> AttachResult:
     groups: List[Group] = []
     questions: List[Question] = []
     answers: List[AnswerRec] = []
@@ -61,6 +70,7 @@ def attach(events: List[Event], doc_id: int = 0) -> AttachResult:
     cur_q: Optional[Question] = None
     cur_answer: Optional[AnswerRec] = None
     mode = "question"                     # question | answer
+    meta = {"answerBlocksWithoutLetter": 0}
 
     # 题目的瞬态信息（不改模型）
     last_opt_order: Dict[int, int] = {}
@@ -88,6 +98,21 @@ def attach(events: List[Event], doc_id: int = 0) -> AttachResult:
                 image_path=opt_img_buf.get(seq, {}).get(label),
             ))
         cur_q = None
+
+    def close_answer() -> None:
+        """收尾一个答案块：慢路径的字母在这里从累积内容中抽取。"""
+        nonlocal cur_answer
+        if cur_answer is None:
+            return
+        if cur_answer.needs_letter:
+            got = template.extract_answer_letter(cur_answer.text)
+            if got:
+                cur_answer.answer, cur_answer.confidence = got
+                cur_answer.needs_letter = False
+        if not cur_answer.answer:
+            meta["answerBlocksWithoutLetter"] += 1
+            answers.remove(cur_answer)
+        cur_answer = None
 
     def new_question(no: Optional[int], stem: str, raw: str, ev: Optional[Event]) -> None:
         nonlocal cur_q, next_q_seq
@@ -150,23 +175,31 @@ def attach(events: List[Event], doc_id: int = 0) -> AttachResult:
         # ---------- 大题组 ----------
         if ev.kind == K_GROUP:
             close_question()
-            cur_answer = None
+            close_answer()
             cur_group = Group(seq=next_group_seq, title=ev.rest, raw_text=ev.text)
             next_group_seq += 1
             groups.append(cur_group)
             mode = "question"
             continue
 
+        # ---------- 答案区里的大题组标题：只更新分组，不切回题目模式 ----------
+        if ev.kind == K_ANSWER_GROUP:
+            cur_group = Group(seq=next_group_seq, title=ev.rest, raw_text=ev.text)
+            next_group_seq += 1
+            groups.append(cur_group)
+            continue
+
         # ---------- 答案分区标题 ----------
         if ev.kind == K_ANSWER_SECTION:
             close_question()
+            close_answer()
             mode = "answer"
-            cur_answer = None
             continue
 
-        # ---------- 答案行 ----------
+        # ---------- 答案行（快路径：整行含题号与字母）----------
         if ev.kind == K_ANSWER:
             close_question()
+            close_answer()
             mode = "answer"
             rec = AnswerRec(
                 no=ev.question_no or 0,
@@ -175,6 +208,26 @@ def attach(events: List[Event], doc_id: int = 0) -> AttachResult:
                 order=ev.order,
                 text=ev.rest,
                 group_seq=cur_group.seq if cur_group else None,
+                in_zone=ev.in_zone,
+            )
+            answers.append(rec)
+            cur_answer = rec
+            continue
+
+        # ---------- 答案块头（慢路径：只切出题号，字母稍后从块内容抽）----------
+        if ev.kind == K_ANSWER_HEAD:
+            close_question()
+            close_answer()
+            mode = "answer"
+            rec = AnswerRec(
+                no=ev.question_no or 0,
+                answer="",
+                confidence=0.0,
+                order=ev.order,
+                text=ev.rest,
+                group_seq=cur_group.seq if cur_group else None,
+                needs_letter=True,
+                in_zone=ev.in_zone,
             )
             answers.append(rec)
             cur_answer = rec
@@ -228,10 +281,13 @@ def attach(events: List[Event], doc_id: int = 0) -> AttachResult:
             continue
 
     close_question()
+    close_answer()
 
-    stats = _fill_number_gaps(
+    stats = dict(meta)
+    stats.update(_fill_number_gaps(
         questions, groups, orphan_images, doc_id, next_q_seq, q_start, q_last
-    )
+    ))
+    stats["answerRecordCount"] = len(answers)
     return AttachResult(
         groups=groups, questions=questions, answers=answers,
         stats=stats, q_start=dict(q_start),
@@ -285,6 +341,10 @@ def _fill_number_gaps(
     1. 只在**连续递增段**内找缺口 —— 题号回退说明换了大题组，不是缺口
     2. 缺口跨度不得超过 _MAX_GAP —— 否则是题号体系本身不连续
     3. 缺口区间内必须存在**整页级图片** —— 补位的唯一理由就是有图吞了题
+
+    另有一条实测补充：题号回退进入新大题组时，若新组**从 N>1 开始**
+    （如 EPI 样卷的「判断推理」直接以 6 开头），说明 1..N-1 的题面也在图片里，
+    同样要补位。缺少这条会让这些题的答案无处回填。
     """
     stats = {"placeholderCount": 0, "orphanImageCount": len(orphan_images)}
     if not questions:
@@ -292,14 +352,16 @@ def _fill_number_gaps(
 
     ordered = sorted(questions, key=lambda x: q_start.get(id(x), 0))
     seq = next_seq
-    prev: Optional[Question] = None
     prev_no = 0
     prev_last = -1
 
     for q in ordered:
         if q.display_no is None:
             continue
-        gap = q.display_no - prev_no - 1
+        # 题号回退 → 新的大题组开始，题号从 1 重新计数
+        reset = q.display_no <= prev_no
+        start_no = 1 if reset else prev_no + 1
+        gap = q.display_no - start_no
         if 0 < gap <= _MAX_GAP:
             hi = q_start.get(id(q), 0)
             imgs = [
@@ -307,7 +369,7 @@ def _fill_number_gaps(
                 if _is_page_scale(img)
             ]
             if imgs:
-                for missing in range(prev_no + 1, q.display_no):
+                for missing in range(start_no, q.display_no):
                     ph = Question(
                         doc_id=doc_id,
                         seq=seq,
@@ -321,9 +383,13 @@ def _fill_number_gaps(
                     )
                     ph.images.extend(imgs)
                     questions.append(ph)
+                    # 必须登记块序：否则排序时会被当成「最靠前」，
+                    # 把按阅读顺序切「题号递增段」的逻辑整段带偏，
+                    # 导致这些题的答案对不上。
+                    q_start[id(ph)] = max(0, hi - (q.display_no - missing))
+                    q_last[id(ph)] = q_start[id(ph)]
                     stats["placeholderCount"] += 1
                     seq += 1
-        prev = q
         prev_no = q.display_no
         prev_last = q_last.get(id(q), prev_last)
 

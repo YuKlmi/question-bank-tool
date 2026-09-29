@@ -150,6 +150,181 @@ async function run() {
     `);
     const listed = JSON.parse(listRes);
     record('题目列表可查询', listed.total === 135 && listed.got === 5, listRes);
+
+    // 8) 真实操作「浏览与校对」界面：进入、展开题目、看正文是否渲染
+    await evaluate(`location.hash = "#/doc/1/questions"`);
+    await new Promise((r) => setTimeout(r, 2500));
+
+    const listCount = await evaluate(
+      'document.querySelectorAll(".qtb-question-item").length',
+    );
+    record('浏览与校对：题目列表渲染', listCount > 0, `item 数=${listCount}`);
+
+    if (listCount === 0) {
+      // 出问题时把上下文打出来，方便定位是哪一环断的
+      const diag = await evaluate(`
+        JSON.stringify({
+          hash: location.hash,
+          header: (document.querySelector(".qtb-header")?.innerText || "").slice(0, 120),
+          contentText: (document.querySelector(".qtb-content")?.innerText || "").slice(0, 200),
+          bodyTail: (document.body.innerText || "").slice(-200),
+          hasErrorResult: !!document.querySelector(".el-result"),
+        })
+      `);
+      record('浏览与校对：诊断信息', false, diag);
+
+      const direct = await evaluate(`
+        (async () => {
+          const out = {};
+          try { out.docGet = (await window.qtb.call("doc.get", { docId: 1 })).name; }
+          catch (e) { out.docGet = "ERR " + e.message; }
+          try { out.groups = (await window.qtb.call("doc.groups", { docId: 1 })).length; }
+          catch (e) { out.groups = "ERR " + e.message; }
+          try {
+            const r = await window.qtb.call("question.list", {
+              docId: 1,
+              filters: { groupSeq: null, reviewState: null, type: null,
+                         hasAnswer: null, keyword: "", page: 1, pageSize: 20 },
+            });
+            out.list = r.total + "/" + r.items.length;
+          } catch (e) { out.list = "ERR " + e.message; }
+          return JSON.stringify(out);
+        })()
+      `);
+      record('浏览与校对：各接口直连结果', false, direct);
+    }
+
+    // 展开第一题
+    const clicked = await evaluate(`
+      (() => {
+        const head = document.querySelector(".qtb-question-head");
+        if (!head) return false;
+        head.click();
+        return true;
+      })()
+    `);
+    record('浏览与校对：题目可点击展开', clicked === true);
+
+    await new Promise((r) => setTimeout(r, 2000));
+    const bodyInfo = await evaluate(`
+      JSON.stringify((() => {
+        const body = document.querySelector(".qtb-question-body");
+        if (!body) return { found: false };
+        const stem = body.querySelector(".qtb-stem");
+        const imgs = body.querySelectorAll(".qtb-image");
+        return {
+          found: true,
+          textLen: (body.innerText || "").trim().length,
+          hasStem: !!stem,
+          imageCount: imgs.length,
+        };
+      })())
+    `);
+    const bi = JSON.parse(bodyInfo);
+    // 首题是图片题（无文本题干），因此「有题干」或「有原图」二者其一即可
+    record(
+      '浏览与校对：展开后题目正文可见',
+      bi.found && (bi.hasStem || bi.imageCount > 0) && bi.textLen > 20,
+      bodyInfo,
+    );
+
+    // 9) 答题页：上/下一题可自由切换（不需要先提交）
+    await evaluate(`location.hash = "#/doc/1/practice"`);
+    await new Promise((r) => setTimeout(r, 1500));
+
+    // 先点「开始练习」抽题
+    const started = await evaluate(`
+      (() => {
+        const btn = [...document.querySelectorAll("button")].find(b => b.innerText.trim() === "开始练习");
+        if (!btn) return false;
+        btn.click();
+        return true;
+      })()
+    `);
+    record('答题页：可开始练习', started === true);
+    await new Promise((r) => setTimeout(r, 2000));
+
+    // 默认抽题量应为该文档已识别的全部题目（此卷 135 题），不再是固定 20
+    const pickedTotal = await evaluate(`
+      (() => {
+        const txt = document.querySelector(".qtb-content")?.innerText || "";
+        const m = txt.match(/第 \\d+ \\/ (\\d+) 题/);
+        return m ? m[1] : "no-indicator";
+      })()
+    `);
+    record('答题页：默认抽满该文档全部题目', pickedTotal === '135', `抽到 ${pickedTotal} 题`);
+
+    const practiceBtns = await evaluate(`
+      JSON.stringify([...document.querySelectorAll(".qtb-panel button")].map(b => b.innerText.trim()))
+    `);
+    record(
+      '答题页：存在上/下一题按钮',
+      practiceBtns.includes('上一题') && practiceBtns.includes('下一题'),
+      practiceBtns,
+    );
+
+    // 直接点「下一题」切到第 2 题，验证无需提交也能翻页
+    const navWorked = await evaluate(`
+      (async () => {
+        const btn = [...document.querySelectorAll("button")].find(b => b.innerText.trim().startsWith("下一题"));
+        if (!btn) return "no-button";
+        btn.click();
+        await new Promise(r => setTimeout(r, 400));
+        const txt = document.querySelector(".qtb-content")?.innerText || "";
+        const m = txt.match(/第 (\\d+) \\/ (\\d+) 题/);
+        return m ? m[1] : "no-indicator";
+      })()
+    `);
+    record('答题页：下一题可直接翻页', navWorked === '2', `当前题序号=${navWorked}`);
+
+    // 10) 答题页：答案与解析默认隐藏，点「查看解析」才展开
+    const revealRaw = await evaluate(`
+      (async () => {
+        const wait = (ms) => new Promise(r => setTimeout(r, ms));
+        // 先翻到一道有文字选项的题（首题可能是图片题面，没有可点的选项）
+        let hasOption = false;
+        for (let i = 0; i < 12 && !hasOption; i++) {
+          if (document.querySelector(".qtb-option")) { hasOption = true; break; }
+          const next = [...document.querySelectorAll("button")]
+            .find(b => b.innerText.trim().startsWith("下一题"));
+          if (!next) break;
+          next.click();
+          await wait(400);
+        }
+        if (!hasOption) return JSON.stringify({ step: "no-option-question" });
+
+        document.querySelector(".qtb-option").click();
+        await wait(200);
+        const submitBtn = [...document.querySelectorAll("button")]
+          .find(b => b.innerText.trim().startsWith("提交并对照答案"));
+        if (!submitBtn) return JSON.stringify({ step: "no-submit-button" });
+        submitBtn.click();
+        await wait(1500);
+
+        const beforeAnswer = !!document.querySelector(".qtb-answer-box");
+        const beforeExplain = !!document.querySelector(".qtb-explain-box");
+        const revealBtn = [...document.querySelectorAll("button")]
+          .find(b => b.innerText.trim() === "查看解析");
+        if (!revealBtn) {
+          return JSON.stringify({ step: "no-reveal-button", beforeAnswer, beforeExplain });
+        }
+        revealBtn.click();
+        await wait(600);
+        return JSON.stringify({
+          beforeAnswer,
+          beforeExplain,
+          afterAnswer: !!document.querySelector(".qtb-answer-box"),
+          afterExplain: !!document.querySelector(".qtb-explain-box"),
+        });
+      })()
+    `);
+    let reveal = {};
+    try { reveal = JSON.parse(revealRaw); } catch { reveal = { step: 'unparsable' }; }
+    record(
+      '答题页：答案与解析默认隐藏，点「查看解析」才展开',
+      reveal.beforeAnswer === false && reveal.beforeExplain === false && reveal.afterAnswer === true,
+      revealRaw,
+    );
   } else {
     record('通过桌面壳导入 PDF 并解析', false, '样例文件缺失');
   }

@@ -14,7 +14,24 @@ function bridge() {
   return window.qtb;
 }
 
-const call = (method, params) => bridge().call(method, params);
+/**
+ * 把参数转成纯对象再交给 preload。
+ *
+ * 必须在这里做，不能只在 preload 里做：Pinia 的 state（如 filters）是
+ * Vue 响应式 Proxy，而 contextBridge 跨「主世界 → 隔离世界」时用的是
+ * 结构化克隆，**Proxy 无法克隆**，会直接抛 "An object could not be cloned."，
+ * 那时 preload 里的清洗代码根本没机会执行。
+ */
+function toPlain(value) {
+  if (value === undefined || value === null) return {};
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return {};
+  }
+}
+
+const call = (method, params) => bridge().call(method, toPlain(params));
 
 export const api = {
   // 系统

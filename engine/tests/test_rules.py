@@ -129,6 +129,38 @@ def test_answer_section(pdf_tpl: Template):
     assert not pdf_tpl.match_answer_section("这道题的答案是A")
 
 
+def test_answer_section_with_prefix(pdf_tpl: Template):
+    """分区标题常带前缀，实测「职业能力测试答案及解析」曾整片漏判。"""
+    assert pdf_tpl.match_answer_section("职业能力测试答案及解析")
+    assert pdf_tpl.match_answer_section("行政能力测试参考答案")
+    assert pdf_tpl.match_answer_section("试题答案详解")
+    assert pdf_tpl.match_answer_section("第一部分答案及解析")
+    # 题干本身不能被当成标题（靠长度上限守卫）
+    assert not pdf_tpl.match_answer_section("根据上述定义，下列哪一项的答案是A，请说明理由")
+
+
+def test_plate_section_titles(pdf_tpl: Template):
+    """板块栏目名要能识别成题组，题号在板块内重置才不至于失去归属。"""
+    assert pdf_tpl.match_group_title("常识") == "常识"
+    assert pdf_tpl.match_group_title("言语理解与表达") == "言语理解与表达"
+    assert pdf_tpl.match_group_title("数量关系") == "数量关系"
+    assert pdf_tpl.match_group_title("判断推理") == "判断推理"
+    assert pdf_tpl.match_group_title("资料分析") == "资料分析"
+
+
+def test_watermark_noise_rules(pdf_tpl: Template):
+    """水印会不断换微信号，规则按结构特征收口。"""
+    assert pdf_tpl.is_noise("各类国企央企银行证券笔试代做包过微信：offertop")
+    assert pdf_tpl.is_noise("各类国企央企银行证券笔试包过助力微信：deoffer")
+    assert pdf_tpl.is_noise("无忧上岸国央企银行证券笔试详情添加微信：nuupee")
+    assert pdf_tpl.is_noise("各类笔试考试包过无忧上岸微信：offertop")
+    assert pdf_tpl.is_noise("galerjim")
+    assert pdf_tpl.is_noise("https://51jobs.taobao.com/")
+    # 正文与选项不能被误杀
+    assert not pdf_tpl.is_noise("下列说法正确的是（    ）")
+    assert not pdf_tpl.is_noise("A. 提高待遇水平属于正常的工作管理")
+
+
 def test_template_catalog_complete():
     ids = {t["id"] for t in Template.list_all()}
     assert {"pdf-consolidated", "docx-mixed"} <= ids

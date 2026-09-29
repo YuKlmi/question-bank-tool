@@ -108,9 +108,15 @@ export const useLibraryStore = defineStore('library', {
       if (!this.currentDocId) return;
       this.loadingQuestions = true;
       try {
+        // 注意：filters 在 Pinia 里是响应式 Proxy，api 层会先做序列化再走 IPC
         const res = await api.listQuestions(this.currentDocId, this.filters);
         this.questions = res.items;
         this.questionTotal = res.total;
+      } catch (err) {
+        // 必须显式上报，否则失败会静默表现成"一道题都没有"
+        this.questions = [];
+        this.questionTotal = 0;
+        ElMessage.error(`读取题目失败：${err.message}`);
       } finally {
         this.loadingQuestions = false;
       }

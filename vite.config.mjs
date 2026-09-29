@@ -12,6 +12,9 @@ export default defineConfig({
     },
   },
   server: {
+    // 固定绑 IPv4：默认的 localhost 在本机会解析到 ::1，
+    // 而开发启动器探测的是 127.0.0.1，会一直等不到端口
+    host: '127.0.0.1',
     port: 5173,
     strictPort: true,
   },

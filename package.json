@@ -33,6 +33,7 @@
   "build": {
     "appId": "com.qtb.questionbank",
     "productName": "题库存取练习工具",
+    "electronDist": "node_modules/electron/dist",
     "files": [
       "electron/**/*",
       "dist/**/*",

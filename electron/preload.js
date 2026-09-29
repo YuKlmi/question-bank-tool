@@ -5,10 +5,27 @@
  */
 const { contextBridge, ipcRenderer } = require('electron');
 
+/**
+ * 把参数清洗成可结构化克隆的纯对象。
+ *
+ * 渲染进程传进来的往往是 Vue 响应式 Proxy（如 Pinia 里的 filters），
+ * 而 IPC 用的是结构化克隆算法，**Proxy 无法克隆**，会直接抛
+ * "An object could not be cloned."。这里统一过一遍 JSON 序列化，
+ * 既清掉 Proxy，也顺便去掉函数等不可传输的值。
+ */
+function sanitize(value) {
+  if (value === undefined || value === null) return {};
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return {};
+  }
+}
+
 contextBridge.exposeInMainWorld('qtb', {
   /** 调用解析引擎（唯一的业务通道）。失败会 reject，带 message / type。 */
   async call(method, params) {
-    const resp = await ipcRenderer.invoke('qtb:call', method, params);
+    const resp = await ipcRenderer.invoke('qtb:call', method, sanitize(params));
     if (!resp || resp.ok !== true) {
       const err = new Error(resp?.error?.message || '引擎调用失败');
       err.type = resp?.error?.type;

@@ -68,6 +68,7 @@ def verify(
         "answersConflict": answer_stats.get("conflict", 0),
         "answersUnmatched": answer_stats.get("unmatched", 0),
         "answersNeedsConfirm": answer_stats.get("needsConfirm", 0),
+        "answerBlocksWithoutLetter": attach_stats.get("answerBlocksWithoutLetter", 0),
         "placeholderCount": attach_stats.get("placeholderCount", 0),
         "createdSlotCount": answer_stats.get("createdSlot", 0),
         "issues": issues,

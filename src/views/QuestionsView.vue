@@ -105,6 +105,15 @@
         <span v-if="item.image_count" class="qtb-muted">· {{ item.image_count }} 图</span>
       </div>
 
+      <!-- 题干预览：收起时也要能看见题目内容，否则整列看起来像"没有题目" -->
+      <div
+        v-if="expandedId !== item.id"
+        class="qtb-question-preview"
+        @click="toggle(item)"
+      >
+        {{ previewOf(item) }}
+      </div>
+
       <div v-if="expandedId === item.id" class="qtb-question-body">
         <div v-if="loadingDetail" v-loading="true" style="height: 60px" />
 
@@ -206,6 +215,17 @@ function collapsedAll() {
   expandedId.value = null;
   detail.value = null;
   editing.value = false;
+}
+
+/** 列表预览文案：图片题给明确提示，其余取题干前段 */
+function previewOf(item) {
+  const stem = String(item.stem || '').trim();
+  if (!stem) {
+    return item.stem_source === 'image' || item.image_count
+      ? '〔题面为图片，点击展开查看原图并录入〕'
+      : '〔题干为空，点击展开补录〕';
+  }
+  return stem.length > 110 ? `${stem.slice(0, 110)}…` : stem;
 }
 
 async function toggle(item) {
