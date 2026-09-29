@@ -336,6 +336,7 @@ Review(docId, questionId, starred, tags JSON, wrongCount, lastWrongAt,
 | 桌面壳 | Electron | 打包 exe、本地文件读写 |
 | 界面 | Vue 3 + Element Plus + Pinia | 用户既有技术栈 |
 | 公式渲染 | KaTeX | 轻量、离线 |
+| **OCR** | **rapidocr 3.9.2**（PP-OCRv6 / ONNX） | 原版 PaddleOCR 不可用，见下 |
 | **解析引擎** | **Python 3**（sidecar） | 见下 |
 | 存储 | SQLite（better-sqlite3） | 单机、易备份 |
 | 图片 | 本地 `media/` 目录 | 与库分离 |
@@ -356,13 +357,69 @@ JSON-RPC（stdin/stdout）通信；需 PyInstaller 打成单文件 exe 随应用
 > 备选方案（未采纳）：整体改用 Python + PySide6 单栈，可省掉通信层，
 > 但放弃 Vue3 生态与既有界面开发经验。**已决策采用 sidecar 方案。**
 
+### OCR 引擎选型（实测确定）
+
+**原版 PaddleOCR 在本环境不可用**：`paddlepaddle` 3.3.1 只提供 cp39–cp313
+轮子，而本机为 **Python 3.14.5**，pip 直接报 `from versions: none`；
+且其 Windows 轮子单文件 **185.8 MB**。
+
+改用 `rapidocr`——同一套 PP-OCR 模型的 ONNX 运行时，不需要 paddlepaddle：
+
+| 方案 | Python 3.14 | 默认识别模型 | 体积 |
+|---|---|---|---|
+| paddleocr + paddlepaddle | ❌ 不可装 | PP-OCRv5 | 185.8 MB+ |
+| rapidocr-onnxruntime 1.2.3 | ✅ | PP-OCRv3 | ~13 MB |
+| **rapidocr 3.9.2** ← 选定 | ✅ | **PP-OCRv6** | ~30 MB |
+
+**实测对比**（[tools/ocr_probe.py](file:///e:/code/新建文件夹/tools/ocr_probe.py)，
+样本为样例 B 那 7 道"图片题面"的嵌入图）：
+
+| 指标 | PP-OCRv3 | PP-OCRv6 |
+|---|---|---|
+| p1 平均置信度 | 0.847（低置信 13/20） | **0.976（低置信 2/20）** |
+| p4 平均置信度 | 0.828（低置信 18/25） | **0.975（低置信 0/23）** |
+| 圈码 `①②③④` | **失败**：`③`→`3`，选项乱码成 `(D32④)` | **全部正确** |
+| 汉字错误 | `细枝末节`→`细枝未节`、`冥顽不灵`→`莫顽不灵` | **均正确** |
+| 耗时 | 3.1–3.8 s/图 | 1.9–2.2 s/图 |
+
+**结论**：采用 `rapidocr` 3.9.2（PP-OCRv6）。**无需降级 Python**，
+也无需引入 186 MB 的 paddlepaddle——PP-OCRv6 比原版 PaddleOCR 3.7 所用的
+PP-OCRv5 还新一代，质量与体积双优。
+
+另测：**2× 上采样无收益**（0.847→0.844、0.828→0.816），模型内部会自行
+缩放，无需预处理放大。
+
+**据实测确认的 OCR 局限**（均属符号层面，非识别错误）：
+- 括号形态被规范化：`(A)` → `[A]`，偶发小写 `[c]` → 选项正则须容错多种括号
+- 填空横线 `______` 会丢失 → 填空题的"空位"信息需另行处理
+- 末行偶发漏检（如题 3 的 `(D)` 行）
+- **OCR 结果一律进人工校对队列，不得直接入库**（遵守"解析永不静默"）
+
+### 已实测可用的依赖版本
+
+本机环境：Python 3.14.5 / Node 24.15.0 / Git 2.54.0 / 已安装 Microsoft Office
+
+| 用途 | 包 | 版本 | 状态 |
+|---|---|---|---|
+| PDF 归一化 | pymupdf | 1.28.2 | ✅ 已验证 |
+| DOCX 解析 | python-docx | 1.2.0 | ✅ 已验证 |
+| `.doc` 转换 | pywin32 | 312 | ✅ 已验证（依赖本机 Word） |
+| **OCR 引擎** | **rapidocr** | **3.9.2** | ✅ 已验证（PP-OCRv6） |
+| OCR 推理后端 | onnxruntime | 1.30.0 | ✅ 已验证 |
+| 图像处理 | Pillow / opencv-python | 12.3.0 / 4.13.0 | ✅ 已验证 |
+| OCR（已弃用） | rapidocr-onnxruntime | 1.2.3 | ⚠ 仅 PP-OCRv3，质量明显偏低 |
+| PDF 备选 | pypdf | 6.13.1 | 已装，暂未使用 |
+
 ### 目录结构（规划）
 
 ```
 ├─ AGENTS.md                  # 本文档
 ├─ tools/
-│  ├─ probe_samples.py        # 样例勘察脚本
-│  └─ out/                    # 勘察产物（不入库）
+│  ├─ probe_samples.py        # 样例结构勘察
+│  ├─ feasibility_check.py    # 解析成功率度量
+│  ├─ render_page.py          # 页面渲染 / 嵌入图导出
+│  ├─ ocr_probe.py            # OCR 引擎对比试跑
+│  └─ out/                    # 产物（不入库）
 ├─ engine/                    # Python 解析引擎
 │  ├─ normalize/              # doc/docx/pdf 归一化
 │  ├─ annotate/               # 标记
@@ -386,7 +443,7 @@ JSON-RPC（stdin/stdout）通信；需 PyInstaller 打成单文件 exe 随应用
 | 题号重复导致答案错配 | 样例 A 实测 | 用 `seq` 主键 + `Group` 分组 |
 | PDF 跨页切断丢选项 | 样例 B 实测 | 坐标级跨页拼接 |
 | 选项即图片 | 样例 B 第 134 题 | `Option.imageId` 字段 |
-| 题面以图片嵌入 | 样例 B 实测 7 道题 | 需 OCR / 视觉兜底，见待决问题 2 |
+| 题面以图片嵌入 | 样例 B 实测 7 道题 | 已定 rapidocr(PP-OCRv6) + 人工校对队列 |
 | `.doc` 依赖本机 Word | 样例 A 格式 | 保留 LibreOffice 兜底路径 |
 | 水印污染正文 | 两份样例均有 | 可配置噪声过滤表 |
 
@@ -394,10 +451,11 @@ JSON-RPC（stdin/stdout）通信；需 PyInstaller 打成单文件 exe 随应用
 
 1. **`.doc` 转换是否强依赖本机 Word？** 若目标机器无 Office，
    需评估 LibreOffice 兜底（当前本机未安装）。已列入 M8 验收标准。
-2. **OCR 已确认需要**（不再是"暂无需求"）。样例 B 有 7 道题（1–3、21–24）
-   的题面以图片形式嵌入，文本层不存在（已渲染核对）。需决定：
-   引入 PaddleOCR 自动识别，还是标记为"需人工补录"。
-   注意这属**视觉**问题，文本大模型同样无效。
+2. **OCR 引擎已选定**：`rapidocr` 3.9.2（PP-OCRv6）。原版 PaddleOCR 因
+   `paddlepaddle` 不支持 Python 3.14 而不可用，选型依据与实测数据见
+   "七、技术架构 → OCR 引擎选型"。仍待定的是**产品策略**：
+   图片题面是"展示原图 + 并排 OCR 候选文本供校对"，还是"仅展示原图、
+   完全由人工录入"。
 3. **主观题自评后是否参与错题本统计？** 建议不参与正确率计算。
 4. **样例含商业水印广告**（`各类考试包过无忧上岸微信：offertop`、
    `考佳卜资料网`、`淘宝店铺地址`）。已按 fixture 入库；
@@ -415,7 +473,7 @@ JSON-RPC（stdin/stdout）通信；需 PyInstaller 打成单文件 exe 随应用
 | M4 | 答题模式 + 分档判分（客观题闭环） | 单选/多选/判断判分正确 |
 | M5 | 批注 + 错题本 + 收藏复习 | 闭环可跑通 |
 | M6 | `.doc`/`.docx` 通道 + 混排答案回填（样例 A 型） | 样例 A 答案回填 + 人工队列可用 |
-| M7 | 表格 / 图片选项 / 公式保真展示 | 图形题与表格题正常显示 |
+| M7 | 表格 / 图片选项 / 公式保真展示 + OCR 图片题面接入 | 图形题与表格题正常显示；图片题面 OCR 结果进校对队列 |
 | M8 | 打包 exe + 导出 + 备份还原 | 目标机无 Office 可运行（待决问题 2 解决后） |
 
 **排序理由**：先做样例 B（格式统一），用最短路径打通
