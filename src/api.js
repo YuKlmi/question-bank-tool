@@ -67,6 +67,10 @@ export const api = {
     call('practice.submit', { questionId, userAnswer, durationMs }),
   selfAssess: (questionId, level) =>
     call('practice.selfAssess', { questionId, level }),
+  // 答题进度按文档存：进度条、抽题顺序、每题草稿都由引擎整存整取
+  practiceGetProgress: (docId) => call('practice.getProgress', { docId }),
+  practiceSaveProgress: (docId, payload) =>
+    call('practice.saveProgress', { docId, payload }),
 
   // 错题本 / 收藏
   listWrongbook: (docId, page = 1, pageSize = 50) =>

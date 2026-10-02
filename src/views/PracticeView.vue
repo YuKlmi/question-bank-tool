@@ -13,6 +13,9 @@
         </el-select>
         <el-input-number v-model="limit" :min="1" :max="maxLimit" />
         <span v-if="docQuestionCount" class="qtb-muted">共 {{ docQuestionCount }} 题</span>
+        <el-tag v-if="restored" size="small" type="success" effect="plain">
+          已恢复上次进度
+        </el-tag>
         <el-button type="primary" :loading="loading" @click="start">
           {{ questions.length ? '重新抽题' : '开始练习' }}
         </el-button>
@@ -163,7 +166,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import api from '../api';
@@ -184,6 +187,11 @@ const index = ref(0);
 /** 每题独立的作答状态：切换题目不会丢掉已选答案 */
 const cards = reactive({});
 let startedAt = Date.now();
+/** 本次进入是否恢复了上次进度 */
+const restored = ref(false);
+let saveTimer = null;
+/** 恢复进度期间挂起保存：否则中途的空草稿会把已存的作答覆盖掉 */
+let suspended = false;
 
 const current = computed(() => questions.value[index.value] || {});
 const state = computed(() => cards[current.value.id] || blankState());
@@ -237,22 +245,113 @@ function ensureState(id) {
   return cards[id];
 }
 
-onMounted(async () => {
-  await store.openDocument(Number(route.params.docId));
-  applyDefaultLimit();
-});
+/** 清空本次会话（切文档、重新抽题都走它） */
+function resetSession() {
+  questions.value = [];
+  index.value = 0;
+  restored.value = false;
+  Object.keys(cards).forEach((k) => delete cards[k]);
+}
+
+/**
+ * 恢复该文档上次的进度。
+ *
+ * 题号由引擎校验过（`_alive_question_ids`）：重新解析后失效的进度会被丢掉，
+ * 也不会串到别的文档。失败不阻塞练习，退回「从头开始」。
+ */
+async function restoreProgress() {
+  const docId = store.currentDocId;
+  if (!docId) return false;
+  try {
+    const p = await api.practiceGetProgress(docId);
+    if (!p?.exists || !p.questions?.length) return false;
+    questions.value = p.questions;
+    index.value = Math.min(p.cursor || 0, p.questions.length - 1);
+    mode.value = p.mode || 'sequence';
+    if (p.limit) limit.value = p.limit;
+    p.questions.forEach((q) => {
+      const d = p.drafts?.[String(q.id)] || {};
+      cards[q.id] = {
+        ...blankState(),
+        ...d,
+        selected: Array.isArray(d.selected) ? d.selected : [],
+      };
+    });
+    restored.value = true;
+    return true;
+  } catch (err) {
+    console.warn('恢复答题进度失败', err);
+    return false;
+  }
+}
+
+async function openDoc(docId) {
+  suspended = true; // 恢复过程中别让中途状态落库
+  try {
+    resetSession();
+    await store.openDocument(docId);
+    if (!(await restoreProgress())) applyDefaultLimit();
+    await nextTick(); // 等恢复引发的 watcher 跑完再放开
+  } finally {
+    suspended = false;
+  }
+}
+
+onMounted(() => openDoc(Number(route.params.docId)));
 
 watch(
   () => route.params.docId,
-  async (v) => {
-    questions.value = [];
-    Object.keys(cards).forEach((k) => delete cards[k]);
-    if (v) {
-      await store.openDocument(Number(v));
-      applyDefaultLimit();
-    }
+  (v) => {
+    if (v) openDoc(Number(v));
   },
 );
+
+/**
+ * 进度快照：抽题顺序 + 当前题位 + 每题草稿。
+ * 拼成字符串交给 watch 比较，省得对 reactive 对象做深比较。
+ */
+const snapshot = computed(() => {
+  if (!questions.value.length) return '';
+  return JSON.stringify({
+    ids: questions.value.map((q) => q.id),
+    cursor: index.value,
+    mode: mode.value,
+    limit: limit.value,
+    drafts: cards,
+  });
+});
+
+watch(snapshot, () => scheduleSave());
+
+function scheduleSave() {
+  if (suspended) return;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveNow, 600);
+}
+
+async function saveNow() {
+  clearTimeout(saveTimer);
+  saveTimer = null;
+  const docId = store.currentDocId;
+  if (!docId || !questions.value.length) return;
+  try {
+    await api.practiceSaveProgress(docId, {
+      questionIds: questions.value.map((q) => q.id),
+      cursor: index.value,
+      mode: mode.value,
+      limit: limit.value,
+      drafts: cards,
+    });
+  } catch (err) {
+    // 存进度失败不该打断答题，界面上的状态仍在
+    console.warn('保存答题进度失败', err);
+  }
+}
+
+// 防抖窗口内直接离开页面时，别把最后几次作答弄丢
+onBeforeUnmount(() => {
+  if (saveTimer) saveNow();
+});
 
 /** 切题：只改索引，作答状态按题保存 */
 function go(target) {
@@ -266,9 +365,9 @@ async function start() {
   loading.value = true;
   try {
     const picked = await api.practicePick(store.currentDocId, mode.value, null, limit.value);
+    // 重新抽题即开一段新会话，覆盖本文档此前的进度
+    resetSession();
     questions.value = picked;
-    index.value = 0;
-    Object.keys(cards).forEach((k) => delete cards[k]);
     picked.forEach((q) => ensureState(q.id));
     startedAt = Date.now();
     if (!picked.length) ElMessage.info('当前条件下没有可练习的题目');

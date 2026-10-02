@@ -325,6 +325,36 @@ async function run() {
       reveal.beforeAnswer === false && reveal.beforeExplain === false && reveal.afterAnswer === true,
       revealRaw,
     );
+
+    // 11) 答题进度按文档保存：切走再回来，题位与已作答状态应原样恢复
+    const readState = `
+      (() => {
+        const txt = document.querySelector(".qtb-content")?.innerText || "";
+        const cursor = txt.match(/第 (\\d+) \\/ (\\d+) 题/);
+        const answered = txt.match(/已作答 (\\d+) \\/ (\\d+)/);
+        return JSON.stringify({
+          cursor: cursor ? cursor[1] : "none",
+          answered: answered ? answered[1] : "none",
+          restoredTag: txt.includes("已恢复上次进度"),
+        });
+      })()
+    `;
+    const before = await evaluate(readState);
+    await new Promise((r) => setTimeout(r, 1200));   // 等防抖保存落库
+
+    await evaluate(`location.hash = "#/doc/1/questions"`);
+    await new Promise((r) => setTimeout(r, 1200));
+    await evaluate(`location.hash = "#/doc/1/practice"`);
+    await new Promise((r) => setTimeout(r, 2500));
+
+    const after = await evaluate(readState);
+    const b = JSON.parse(before);
+    const a = JSON.parse(after);
+    record(
+      '答题进度：切走再回来可恢复题位与已作答数',
+      a.cursor === b.cursor && a.answered === b.answered && a.restoredTag === true,
+      `离开前 ${before} → 回来后 ${after}`,
+    );
   } else {
     record('通过桌面壳导入 PDF 并解析', false, '样例文件缺失');
   }

@@ -510,6 +510,90 @@ class Store:
         res = self.list_questions(doc_id, f)
         return [self.get_question(i["id"]) for i in res["items"]]
 
+    # ------------------------------------------------------------ 答题进度
+
+    def save_practice_progress(self, doc_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """整条覆盖某份文档的答题进度。
+
+        `doc_id` 是这张表的主键，所以不同文档各存各的、互不覆盖。
+        """
+        if self.conn.execute("SELECT 1 FROM documents WHERE id=?", (doc_id,)).fetchone() is None:
+            raise KeyError(f"文档不存在: {doc_id}")
+
+        ids = self._alive_question_ids(doc_id, payload.get("questionIds") or [])
+        raw = payload.get("drafts") or {}
+        # 只留仍有效的题号对应的草稿，避免把别份文档的残留一起存进来
+        drafts = {str(qid): (raw.get(str(qid)) or raw.get(qid) or {}) for qid in ids}
+        cursor = max(0, min(int(payload.get("cursor") or 0), max(0, len(ids) - 1)))
+        now = dbmod.now()
+
+        self.conn.execute(
+            "INSERT INTO practice_progress"
+            "(doc_id, question_ids, cursor, drafts, mode, limit_n, updated_at)"
+            " VALUES(?,?,?,?,?,?,?)"
+            " ON CONFLICT(doc_id) DO UPDATE SET"
+            "   question_ids=excluded.question_ids, cursor=excluded.cursor,"
+            "   drafts=excluded.drafts, mode=excluded.mode,"
+            "   limit_n=excluded.limit_n, updated_at=excluded.updated_at",
+            (doc_id, json.dumps(ids), cursor, json.dumps(drafts, ensure_ascii=False),
+             payload.get("mode") or "sequence", int(payload.get("limit") or 0), now),
+        )
+        self.conn.commit()
+        return {"docId": doc_id, "savedAt": now, "questionCount": len(ids), "cursor": cursor}
+
+    def get_practice_progress(self, doc_id: int) -> Dict[str, Any]:
+        """读取某份文档的答题进度，连同抽中的题目一起返回（一次 IPC 拿全）。"""
+        empty: Dict[str, Any] = {"exists": False, "docId": doc_id, "cursor": 0,
+                                 "mode": "sequence", "limit": 0,
+                                 "drafts": {}, "questions": []}
+        row = self.conn.execute(
+            "SELECT * FROM practice_progress WHERE doc_id=?", (doc_id,)
+        ).fetchone()
+        if row is None:
+            return empty
+
+        ids = self._alive_question_ids(doc_id, _loads(row["question_ids"], []))
+        if not ids:
+            # 题号全失效了（多半是重新解析过），留着只会让界面误以为还有进度
+            self.conn.execute("DELETE FROM practice_progress WHERE doc_id=?", (doc_id,))
+            self.conn.commit()
+            return empty
+
+        drafts = _loads(row["drafts"], {})
+        return {
+            "exists": True,
+            "docId": doc_id,
+            "cursor": max(0, min(int(row["cursor"] or 0), len(ids) - 1)),
+            "mode": row["mode"] or "sequence",
+            "limit": int(row["limit_n"] or 0),
+            "updatedAt": row["updated_at"],
+            "drafts": {str(qid): (drafts.get(str(qid)) or {}) for qid in ids},
+            "questions": [self.get_question(qid) for qid in ids],
+        }
+
+    def _alive_question_ids(self, doc_id: int, ids: Any) -> List[int]:
+        """按给定顺序去重，并剔除不属于本文档（或已随重新解析消失）的题号。"""
+        wanted: List[int] = []
+        seen = set()
+        for raw in ids:
+            try:
+                qid = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if qid not in seen:
+                seen.add(qid)
+                wanted.append(qid)
+        if not wanted:
+            return []
+        marks = ",".join("?" * len(wanted))
+        alive = {
+            r["id"] for r in self.conn.execute(
+                f"SELECT id FROM questions WHERE doc_id=? AND id IN ({marks})",
+                (doc_id, *wanted),
+            )
+        }
+        return [qid for qid in wanted if qid in alive]
+
     # ---------------------------------------------------------------- 复习
 
     def ensure_review(self, doc_id: int, question_id: int) -> Dict[str, Any]:

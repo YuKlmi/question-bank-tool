@@ -306,7 +306,10 @@ B【解析】Ｂ句是…           ←   （上一行的续行才是答案）
   标记一律隐藏，需再点「查看解析」才展开（按题记忆，来回翻题不会重新藏起来）。
   主观题在同一位置接「自评」。避免一边做题一边看到答案
 - 提交后可对照答案 + 解析 + 定位原文
-- 进度自动保存、可中断续做
+- **答题进度按文档保存**：抽题顺序、当前题位、每题草稿（含**尚未提交**的选择）
+  一并落库；切文档、关应用后再回来自动恢复并给出「已恢复上次进度」提示。
+  进度以 `docId` 为主键，各份文档各存各的；重新解析后题号全变，
+  失效进度会被自动剔除，不会挂到新题上
 
 ### F6 批注
 - 题目级富文本笔记、文本高亮、标签、颜色
@@ -482,6 +485,10 @@ Attempt(id, docId, questionId, userAnswer, isCorrect, durationMs, createdAt)
 -- 复习（错题本 / 收藏共用，跨文档汇总时按 docId 筛选）
 Review(docId, questionId, starred, tags JSON, wrongCount, lastWrongAt,
        correctStreak, nextReviewAt)
+
+-- 答题进度（一份文档一条；docId 直接作主键）
+PracticeProgress(docId PRIMARY KEY, questionIds JSON, cursor, drafts JSON,
+                 mode, limitN, updatedAt)
 ```
 
 **关键点**：
@@ -494,6 +501,10 @@ Review(docId, questionId, starred, tags JSON, wrongCount, lastWrongAt,
   `ok`（自动通过）/ `fixed`（人工已修正）
 - `stemSource` 区分题干来自文本提取还是图片，用于筛选"待录入"队列
 - `Attempt` / `Review` 冗余 `docId`，支持按文档筛选与跨文档汇总
+- `PracticeProgress` 用 `docId` 作主键，**一份文档只留一条**——这是
+  「分文档保存答题进度」的结构保证，而不是靠查询时过滤。
+  `questionIds` 取出后会逐题校验是否仍属于该文档：重新解析把题号换掉之后，
+  进度自动作废并清行，绝不会把旧进度挂到新题上
 
 ---
 
@@ -625,7 +636,7 @@ cp39–cp313 轮子，本机为 **Python 3.14.5**，pip 直接报 `from versions
 │  ├─ annotate/                 # 第 2 段：打标（只做局部判断）
 │  ├─ attach/                   # 第 3 段：回填（归属、跨页、答案分层匹配）
 │  ├─ verify/                   # 第 4 段：校验（置信度、状态、报告）
-│  └─ tests/                    # pytest 测试（91 项）
+│  └─ tests/                    # pytest 测试（98 项）
 │
 ├─ electron/                    # 桌面壳
 │  ├─ main.js                   # 主进程：窗口、IPC、qtb-media:// 协议
@@ -657,9 +668,9 @@ npm install
 npm run dev
 
 # 4) 测试
-npm run test:engine     # 引擎 91 项：规则 / 流水线 / 服务 / RPC / 隔离性
+npm run test:engine     # 引擎 98 项：规则 / 流水线 / 服务 / 进度 / RPC / 隔离性
 npm test                # 桌面壳 ↔ 引擎 集成（node:test，零额外依赖）
-npm run test:e2e        # 真实 Electron 端到端冒烟（18 项）
+npm run test:e2e        # 真实 Electron 端到端冒烟（19 项）
 
 # 5) 只用引擎解析一份文档（调试用）
 python -m engine.cli parse samples/行测题库及答案详解二.pdf --pending 10
@@ -712,6 +723,7 @@ npm run dist            # 生成 portable + NSIS 安装包
 | M7 | 表格 / 图片选项 / 公式保真展示 + 图片题原图展示与手动录入 | 图形题与表格题正常显示；图片题可看图作答并支持补录 | ✅ 完成 |
 | M8 | 打包 exe + 导出 + 备份还原 | 目标机无 Office 可运行 | ✅ 完成 |
 | M9 | 样例 C 压力样本修正：卷首须知排除、答案按「题号递增段」对齐、答题可上/下一题、浏览与校对显示 | 样例 C 60/60 答案命中；卷首须知不产假题；答题页可任意跳题；浏览与校对可见题干 | ✅ 完成 |
+| M10 | 答题进度按文档保存：抽题顺序 / 当前题位 / 每题草稿落库，再进来自动恢复 | 切走再回来题位与已作答数原样恢复；两份文档各存各的进度、互不覆盖 | ✅ 完成 |
 
 ### 打包结果（实测）
 
@@ -780,9 +792,9 @@ release/win-unpacked/
 
 | 测试 | 数量 | 命令 | 内容 |
 |---|---|---|---|
-| 引擎单测与集成 | **91** | `npm run test:engine` | 规则切分、四份样例的流水线回归、服务层与持久化、RPC 契约、文档分区隔离 |
+| 引擎单测与集成 | **98** | `npm run test:engine` | 规则切分、四份样例的流水线回归、服务层与持久化、答题进度（往返 / 分文档隔离 / 失效题号）、RPC 契约、文档分区隔离 |
 | 桌面壳 ↔ 引擎 | **6** | `npm test` | Python 子进程启停、JSON-RPC 收发、并发不串号、导入全流程 |
-| 端到端冒烟 | **18** | `npm run test:e2e` | 真实 Electron 下渲染进程→preload→IPC→引擎整条链路，含浏览与校对列表渲染、答题页上/下一题翻页、默认抽满全部题目、答案与解析默认隐藏 |
+| 端到端冒烟 | **19** | `npm run test:e2e` | 真实 Electron 下渲染进程→preload→IPC→引擎整条链路，含浏览与校对列表渲染、答题页上/下一题翻页、默认抽满全部题目、答案与解析默认隐藏、切走再回来恢复答题进度 |
 
 ### 已知限制（诚实记录）
 

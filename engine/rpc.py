@@ -64,6 +64,9 @@ def build_routes(store: Store) -> Dict[str, Callable[..., Any]]:
         "practice.submit": lambda p: store.submit_answer(
             int(p["questionId"]), p.get("userAnswer") or "", int(p.get("durationMs") or 0)),
         "practice.selfAssess": lambda p: store.self_assess(int(p["questionId"]), p.get("level") or "模糊"),
+        "practice.getProgress": lambda p: store.get_practice_progress(int(p["docId"])),
+        "practice.saveProgress": lambda p: store.save_practice_progress(
+            int(p["docId"]), p.get("payload") or {}),
 
         # 错题本 / 收藏 / 复习
         "wrongbook.list": lambda p: store.list_wrongbook(p.get("docId"), int(p.get("page") or 1),

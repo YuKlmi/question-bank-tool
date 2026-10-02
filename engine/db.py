@@ -152,6 +152,18 @@ CREATE TABLE IF NOT EXISTS reviews (
 );
 CREATE INDEX IF NOT EXISTS idx_rev_wrong ON reviews(in_wrongbook);
 
+-- 答题进度：doc_id 直接作主键，一份文档只留一条，天然实现"分文档各存各的"。
+-- 抽题结果与作答草稿都是会话态，形状随界面走，故整存成 JSON。
+CREATE TABLE IF NOT EXISTS practice_progress (
+  doc_id       INTEGER PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
+  question_ids TEXT NOT NULL DEFAULT '[]',
+  cursor       INTEGER NOT NULL DEFAULT 0,
+  drafts       TEXT NOT NULL DEFAULT '{}',
+  mode         TEXT DEFAULT 'sequence',
+  limit_n      INTEGER DEFAULT 0,
+  updated_at   TEXT
+);
+
 CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT

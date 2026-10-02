@@ -245,6 +245,96 @@ def test_practice_pick_modes(mut):
     assert len(s.practice_pick(doc["id"], "pending", limit=50)) == expected
 
 
+# ---------------- 答题进度（按文档保存） ----------------
+
+def test_practice_progress_round_trip(mut):
+    s, doc = mut
+    ids = [q["id"] for q in s.practice_pick(doc["id"], "sequence", limit=6)]
+    s.save_practice_progress(doc["id"], {
+        "questionIds": ids,
+        "cursor": 3,
+        "mode": "random",
+        "limit": 6,
+        "drafts": {
+            str(ids[0]): {"selected": ["A"], "submitted": True, "revealed": True, "correct": True},
+            str(ids[2]): {"selected": ["B", "C"], "submitted": False, "revealed": False},
+            "99999999": {"selected": ["D"]},      # 不属于本次抽题，应被丢掉
+        },
+    })
+
+    p = s.get_practice_progress(doc["id"])
+    assert p["exists"] is True
+    assert (p["cursor"], p["mode"], p["limit"]) == (3, "random", 6)
+    assert [q["id"] for q in p["questions"]] == ids          # 抽题顺序原样保留
+    assert p["drafts"][str(ids[0])]["submitted"] is True
+    assert p["drafts"][str(ids[2])]["selected"] == ["B", "C"]
+    assert p["drafts"][str(ids[1])] == {}                     # 没作答的题给空草稿
+    assert "99999999" not in p["drafts"]
+
+
+def test_practice_progress_empty_when_absent(mut):
+    s, doc = mut
+    p = s.get_practice_progress(doc["id"])
+    assert p["exists"] is False and p["questions"] == [] and p["drafts"] == {}
+
+
+def test_practice_progress_cursor_clamped(mut):
+    """题位越界要收敛，否则恢复后指到不存在的题上。"""
+    s, doc = mut
+    ids = [q["id"] for q in s.practice_pick(doc["id"], "sequence", limit=3)]
+    s.save_practice_progress(doc["id"], {"questionIds": ids, "cursor": 99})
+    assert s.get_practice_progress(doc["id"])["cursor"] == 2
+
+
+def test_practice_progress_drops_stale_questions(mut):
+    """重新解析后题号会全变，失效的进度必须丢掉，不能挂到别的题上。"""
+    s, doc = mut
+    ids = [q["id"] for q in s.practice_pick(doc["id"], "sequence", limit=4)]
+    s.save_practice_progress(doc["id"], {"questionIds": ids, "cursor": 2})
+
+    s.delete_question(ids[1])
+    p = s.get_practice_progress(doc["id"])
+    assert [q["id"] for q in p["questions"]] == [ids[0], ids[2], ids[3]]
+    assert p["cursor"] == 2
+
+    for qid in (ids[0], ids[2], ids[3]):
+        s.delete_question(qid)
+    assert s.get_practice_progress(doc["id"])["exists"] is False
+
+
+def test_practice_progress_is_per_document(tmp_path, pdf_sample):
+    """核心诉求：每份文档各存各的进度，互不覆盖、互不串题。"""
+    from engine.service import Store
+
+    s = Store(tmp_path / "progress")
+    try:
+        d1 = s.import_document(str(pdf_sample))
+        d2 = s.import_document(str(pdf_sample))
+        assert d1["id"] != d2["id"]
+
+        q1 = [q["id"] for q in s.practice_pick(d1["id"], "sequence", limit=4)]
+        q2 = [q["id"] for q in s.practice_pick(d2["id"], "sequence", limit=3)]
+        s.save_practice_progress(d1["id"], {"questionIds": q1, "cursor": 1})
+        s.save_practice_progress(d2["id"], {"questionIds": q2, "cursor": 2})
+
+        p1, p2 = s.get_practice_progress(d1["id"]), s.get_practice_progress(d2["id"])
+        assert [q["id"] for q in p1["questions"]] == q1
+        assert [q["id"] for q in p2["questions"]] == q2
+        assert (p1["cursor"], p2["cursor"]) == (1, 2)
+
+        # 把别份文档的题号塞进来要被剔除，不能让进度成为跨文档混排的口子
+        s.save_practice_progress(d1["id"], {"questionIds": q1 + q2, "cursor": 0})
+        assert [q["id"] for q in s.get_practice_progress(d1["id"])["questions"]] == q1
+    finally:
+        s.close()
+
+
+def test_practice_progress_rejects_unknown_document(mut):
+    s, _ = mut
+    with pytest.raises(KeyError):
+        s.save_practice_progress(987654321, {"questionIds": []})
+
+
 # ---------------- 收藏 / 标签 ----------------
 
 def test_star_toggle(mut):
@@ -375,7 +465,8 @@ def test_rpc_routes_cover_service(tmp_path):
         for m in ["system.ping", "system.info", "doc.import", "doc.list", "doc.get",
                   "doc.delete", "doc.groups", "question.list", "question.get",
                   "question.update", "question.create", "practice.pick",
-                  "practice.submit", "practice.selfAssess", "wrongbook.list",
+                  "practice.submit", "practice.selfAssess",
+                  "practice.getProgress", "practice.saveProgress", "wrongbook.list",
                   "wrongbook.set", "review.star", "review.tags", "annotation.list",
                   "annotation.create", "annotation.update", "annotation.delete",
                   "image.list", "export.markdown", "export.csv", "settings.get",
@@ -384,6 +475,33 @@ def test_rpc_routes_cover_service(tmp_path):
             assert m in routes, f"缺少 RPC 方法: {m}"
     finally:
         s.close()
+
+
+def test_rpc_practice_progress_round_trip(mut):
+    """真走一次 RPC 的参数名。
+
+    `test_no_route_has_arity_mismatch` 允许 KeyError，所以 `p["docId"]`
+    这类笔误它放得过——而界面正是靠这个 key 传参，必须真调一次。
+    """
+    from engine.rpc import build_routes, handle
+
+    s, doc = mut
+    routes = build_routes(s)
+    ids = [q["id"] for q in s.practice_pick(doc["id"], "sequence", limit=3)]
+
+    saved = handle(routes, {"id": 1, "method": "practice.saveProgress", "params": {
+        "docId": doc["id"],
+        "payload": {"questionIds": ids, "cursor": 1, "mode": "random", "limit": 3,
+                    "drafts": {str(ids[0]): {"selected": ["A"], "submitted": True}}},
+    }})
+    assert saved["ok"] is True, saved.get("error")
+
+    got = handle(routes, {"id": 2, "method": "practice.getProgress",
+                          "params": {"docId": doc["id"]}})
+    assert got["ok"] is True, got.get("error")
+    assert got["result"]["exists"] is True
+    assert [q["id"] for q in got["result"]["questions"]] == ids
+    assert got["result"]["drafts"][str(ids[0])]["submitted"] is True
 
 
 def test_rpc_parameterless_routes_are_callable(tmp_path):
